@@ -11,6 +11,8 @@
   Also get TinyGPS++ library from:
   https://github.com/mikalhart/TinyGPSPlus
 
+  GPS Sample code from: https://github.com/LilyGO/TTGO-T-Beam/blob/master/GPS-T22_v1.0-20190612/GPS-T22_v1.0-20190612.ino
+
   There is a tendency to want to report more precise data than is supported by your GPS
   and perhaps more precision than is needed by your application.  Refer to the following
   table and compare with the abilities of your device and the requirements of your 
@@ -108,34 +110,41 @@ String lastseen[maxarray][4] = {
 
 
 // Configure Button
-#define button 38
-#define debounceTimeout 100
-long int lastDebounceTime;
+const int buttonPin = 38;    // the number of the pushbutton pin
+int buttonState;             // the current reading from the input pin
+int lastButtonState = HIGH;   // the previous reading from the input pin
+unsigned long lastDebounceTime = 0;  // the last time the output pin was toggled
+unsigned long debounceDelay = 50;    // the debounce time; increase if the output flickers
+
+int menuScreen = 0;
+int menuScreenMax = 3;
+
 
 void setup() {
   Serial.begin(115200);
+  Serial.println("~~~~~~~~~~~~~~~~~~~~~~~");
+  Serial.println("Configuration begins");
 
   //Setup WIFI - move to run in background later?
+  /*
   Serial.print("Connecting to ");
   Serial.println(ssid);
+  WiFi.begin(ssid, password);
 
-  /*
-    WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+  }
 
-    while (WiFi.status() != WL_CONNECTED) {
-          delay(500);
-          Serial.print(".");
-    }
-
-    Serial.println("");
-    Serial.println("WiFi connected");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
   */
-  Serial.print("WiFi MAC: ");
-  //Serial.println(WiFi.macAddress());
+  
+  Serial.print("--> WiFi MAC: ");
   Serial.println(wifimac);
-  Serial.println("This is System ID: " + systemid);
+  Serial.println("--> This is System ID: " + systemid);
 
   //Setup the display
   display.begin(SH1106_SWITCHCAPVCC, 0x3C);  // initialize with the I2C addr 0x3D (for the 128x64)
@@ -225,14 +234,26 @@ void setup() {
   display.display();  // shows the default adafruit library logo if nothing else has been defined above
   delay(2000);
   display.clearDisplay();  // clears the display
-  Serial.println("Local display active.");
+  Serial.println("--> Local display active.");
 
   //Setup GPS
+  Wire.begin(21, 22);
+  if (!axp.begin(Wire, AXP192_SLAVE_ADDRESS)) {
+    Serial.println("AXP192 Begin PASS");
+  } else {
+    Serial.println("AXP192 Begin FAIL");
+  }
+  axp.setPowerOutPut(AXP192_LDO2, AXP202_ON);
+  axp.setPowerOutPut(AXP192_LDO3, AXP202_ON);
+  axp.setPowerOutPut(AXP192_DCDC2, AXP202_ON);
+  axp.setPowerOutPut(AXP192_EXTEN, AXP202_ON);
+  axp.setPowerOutPut(AXP192_DCDC1, AXP202_ON);
+  
   GPS.begin(9600, SERIAL_8N1, 34, 12);   //34-TX 12-RX
-  Serial.println("GPS listening...");
+  Serial.println("--> GPS listening.");
   // more precision? https://sites.google.com/site/wayneholder/self-driving-rc-car/getting-the-most-from-gps
-  GPS.print("$PMTK313,1*2E\r\n");  // Enable to search a SBAS satellite
-  GPS.print("$PMTK301,2*2E\r\n");  // Enable WAAS as DGPS Source
+  //GPS.print("$PMTK313,1*2E\r\n");  // Enable to search a SBAS satellite
+  //GPS.print("$PMTK301,2*2E\r\n");  // Enable WAAS as DGPS Source
   
   //Setup LoRa
   // override the default CS, reset, and IRQ pins (optional)
@@ -243,13 +264,14 @@ void setup() {
     while (true);                       // if failed, do nothing - this code is from the LoRaSetSpread example and the conventions are silly
   }
   LoRa.setSpreadingFactor(7);           // ranges from 6-12,default 7 see API docs
-  Serial.println("LoRa init succeeded.");
+  Serial.println("--> LoRa init succeeded.");
 
   //Setup Button
-  pinMode(button, INPUT);
+  pinMode(buttonPin, INPUT);
 
   //Serial debug info
   Serial.println("Configuration OK, starting... ");
+  Serial.println("~~~~~~~~~~~~~~~~~~~~~~~");
 
 }
 
@@ -287,7 +309,7 @@ String gettime(){
 
 
 // Write the LCD and serial output
-void updatedisplay() {
+void updatedisplay(int menuScreen) {
   String currenttime;
   String mylat;
   String mylng;
@@ -322,43 +344,81 @@ void updatedisplay() {
     position_rating = "No Fix";
   }
   position_rating = position_rating +" (" + (hdop_val / 100.0) +")";
-  
-  display.setTextSize(1);
-  display.setTextColor(WHITE);
-  display.setCursor(0, 0);
-  
-  Serial.println("Latitude  : " +mylat);
-  //display.println("Lat : " +mylat);
-  display.println(mylat +" , " +mylng);
-  
-  Serial.println("Longitude : " +mylng);
-  //display.println("Lon : " +mylng);
-  
-  Serial.println("Satellites: " +sats);
-  //display.println("Sats: " +sats);
-  display.println(position_rating +" " +sats +" sats");
-  
-  Serial.println("Altitude  : " +alt +" ft");
-  display.println("Alt : " +alt +" ft");
 
-  Serial.println("Time      : " +currenttime);
-  display.println("Time: " +currenttime);
+  display.clearDisplay();  // Clear the buffer to prepare for the next screen draw
+ 
+  // Default Display - GPS information
+  if (menuScreen == 0){
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
   
-  Serial.println("Fix       : " +position_rating);
-  //display.println("Fix : " +position_rating);
+    Serial.println("Latitude  : " +mylat);
+    //display.println("Lat : " +mylat);
+    display.println(mylat +" , " +mylng);
+  
+    Serial.println("Longitude : " +mylng);
+    //display.println("Lon : " +mylng);
+  
+    Serial.println("Satellites: " +sats);
+    //display.println("Sats: " +sats);
+    display.println(position_rating +" " +sats +" sats");
+  
+    Serial.println("Altitude  : " +alt +" ft");
+    display.println("Alt : " +alt +" ft");
+
+    Serial.println("Time      : " +currenttime);
+    display.println("Time: " +currenttime);
+  
+    Serial.println("Fix       : " +position_rating);
+    //display.println("Fix : " +position_rating);
     
-  //Serial.print("IP        : ");
-  //Serial.println(WiFi.localIP());
-  //display.print("IP  : ");
-  //display.println(WiFi.localIP());
-
-  for (int i = 0; i < maxarray; i++){
-   if (lastseen[i][0].length() > 1){
-      String current_vector = getVector(lastseen[i][1].toDouble(), lastseen[i][2].toDouble());
-      Serial.println(lastseen[i][0] +"      : " +current_vector);
-      display.println(lastseen[i][0] +": " +current_vector);
-   }
+    //Serial.print("IP        : ");
+    //Serial.println(WiFi.localIP());
+    //display.print("IP  : ");
+    //display.println(WiFi.localIP());
   }
+
+  if (menuScreen == 1){
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    Serial.println("Recently seen peers");
+    display.println("Recently seen peers");
+    for (int i = 0; i < maxarray; i++){
+     if (lastseen[i][0].length() > 1){
+        String current_vector = getVector(lastseen[i][1].toDouble(), lastseen[i][2].toDouble());
+        Serial.println(lastseen[i][0] +"      : " +current_vector);
+        display.println(lastseen[i][0] +": " +current_vector);
+     }
+    }
+  }
+
+  if (menuScreen == 2){
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.println("Altitude (ft) : ");
+    display.println("");
+    display.setTextSize(5);
+    display.print(alt);
+    
+    Serial.println("Altitude  : " +alt +" ft");
+  }
+
+  // Show the Device ID on the main screen
+  if (menuScreen == 3){
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.println("This is device #");
+    display.println("");
+    display.setTextSize(5);
+    display.print(systemid);
+    Serial.print("--> This is Device # ");
+    Serial.println(systemid);
+  }
+  
   Serial.println("**********************");
   display.display();
 }
@@ -508,13 +568,49 @@ void scanNetworks() {
   Serial.println("-----------------------");
 }
 
+long startInterval = millis();
+
 // Main loop
 void loop() {
+  
+  // Watch the button for changes
+  // read the state of the switch into a local variable:
+  int reading = digitalRead(buttonPin);
+  // If the switch changed, due to noise or pressing:
+  if (reading != lastButtonState) {
+    // reset the debouncing timer
+    lastDebounceTime = millis();
+  }
+
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    // whatever the reading is at, it's been there for longer than the debounce
+    // delay, so take it as the actual current state:
+    // if the button state has changed:
+    if (reading != buttonState) {
+      buttonState = reading;
+      //Serial.println("Button state change detected");
+
+      // only toggle the button action if the new button state is LOW
+      if (buttonState == LOW) {
+        //Serial.println("Button is pressed");
+        menuScreen++;
+        if (menuScreen > menuScreenMax){
+          menuScreen = 0;
+        }
+        Serial.print("Selected screen number  ");
+        Serial.println(menuScreen);
+        updatedisplay(menuScreen);
+      }
+    }
+  }
+  lastButtonState = reading;
+
+  
   // parse for a packet, and call onReceive with the result:
   onReceive(LoRa.parsePacket());
 
   if (millis() - lastSendTime > interval) {
-    updatedisplay();
+    updatedisplay(menuScreen);
 
     String message = systemid;      //prefix message
 
@@ -534,34 +630,21 @@ void loop() {
     lastSendTime = millis();            // timestamp the message
     interval = random(5000) + 5000;     // 5 - 10 seconds
 
-    //smartDelay(1000);
+    smartDelay(1000);
 
-    if (millis() > 5000 && gps.charsProcessed() < 10)
-      Serial.println(F("No GPS data received: check wiring"));
-    //display.println("No GPS data received: check wiring");
-    //display.display();
+    //if (millis() > 5000 && gps.charsProcessed() < 10)
+    //  Serial.println(F("No GPS data received: check wiring"));
 
     // Set up for the next pass
     display.clearDisplay();
-    if ((millis() - lastSendTime > interval) && (!wifi_connected)){
-      scanNetworks();
-    }
-  }
-    // Watch the button for changes
-    // Read the button
-    int pressed = digitalRead(button);
-    // Get the current time
-    long int currentTime = millis();
-    if(pressed == LOW){
-      //Reset the count time while button is not pressed
-      lastDebounceTime = currentTime;
-    }
+    //if ((millis() - lastSendTime > interval) && (!wifi_connected)){
+    //  scanNetworks();
+    //}
+  } // End main update loop
+  
 
-    if(((currentTime - lastDebounceTime) > debounceTimeout)){
-      // If the timeout is reached, register the button press!
-      Serial.println("Button Press Detected!");
-    }
 }
+
 static void smartDelay(unsigned long ms)
 {
   unsigned long start = millis();
